@@ -1,0 +1,22 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.iml
+*.class
+
+# Maven
+target/
+*.jar
+
+# Environment
+.env
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.h2.db
