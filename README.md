@@ -228,6 +228,7 @@ See ARCHITECTURE.md for full details.
 
 .\e2e-test.ps1 orchestrate "https://github.com" 30
 
-.\e2e-test.ps1 e2etestclear
+Full E2E Test with input URL in e2e-test.ps1:
+  .\e2e-test.ps1 e2etest
 
 ```
