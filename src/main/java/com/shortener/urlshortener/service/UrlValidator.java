@@ -1,80 +1,136 @@
 package com.shortener.urlshortener.service;
 
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.Arrays;
 import java.util.List;
 
 /**
- * Validates URLs to prevent SSRF attacks.
- * Blocks requests to private/internal networks.
+ * UrlValidator
+ *
+ * Validates URLs for security and format.
+ * Prevents SSRF (Server-Side Request Forgery) attacks by blocking:
+ * - Localhost URLs
+ * - Private IP addresses (10.x, 192.168.x, 172.16-31.x)
+ * - AWS metadata endpoints
+ * - File system URLs
+ *
+ * @author Agentic SDLC Project
+ * @version 1.0
  */
+@Slf4j
+@Component
 public class UrlValidator {
 
     private static final List<String> BLOCKED_HOSTS = Arrays.asList(
-            "localhost", "127.0.0.1", "0.0.0.0",
-            "169.254.169.254", // AWS metadata endpoint
-            "10.", "172.16.", "192.168.", // Private networks
-            "0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16"
+            "localhost",
+            "127.0.0.1",
+            "0.0.0.0",
+            "169.254.169.254",  // AWS metadata
+            "::1",               // IPv6 localhost
+            "fc00::",            // IPv6 private
+            "fe80::"             // IPv6 link-local
+    );
+
+    private static final List<String> BLOCKED_PATTERNS = Arrays.asList(
+            "^10\\..*",                    // 10.0.0.0/8
+            "^192\\.168\\..*",             // 192.168.0.0/16
+            "^172\\.(1[6-9]|2[0-9]|3[01])\\..+",  // 172.16.0.0/12
+            "^127\\..*",                   // 127.0.0.0/8
+            "^0\\..*"                      // 0.0.0.0/8
     );
 
     /**
-     * Validate URL: must be valid, accessible, and not point to private networks.
+     * Check if a URL is valid (returns boolean for tests)
+     *
+     * @param url the URL to validate
+     * @return true if valid, false otherwise
      */
-    public static void validate(String urlString) throws IllegalArgumentException {
-        if (urlString == null || urlString.isBlank()) {
-            throw new IllegalArgumentException("URL cannot be empty");
+    public boolean isValid(String url) {
+        if (url == null || url.trim().isEmpty()) {
+            log.debug("URL is null or empty");
+            return false;
         }
 
-        // Check protocol
-        if (!urlString.startsWith("http://") && !urlString.startsWith("https://")) {
-            throw new IllegalArgumentException("URL must start with http:// or https://");
-        }
-
-        // Parse and validate
         try {
-            URI uri = new URI(urlString);
-            String host = uri.getHost();
-
-            if (host == null || host.isBlank()) {
-                throw new IllegalArgumentException("Invalid URL: no host");
-            }
-
-            // Check for SSRF attacks
-            if (isPrivateOrBlockedHost(host)) {
-                throw new IllegalArgumentException("URL points to blocked/private network: " + host);
-            }
-
-        } catch (URISyntaxException e) {
-            throw new IllegalArgumentException("Invalid URL format: " + e.getMessage());
+            validateUrl(url);
+            return true;
+        } catch (IllegalArgumentException e) {
+            log.debug("URL validation failed: {}", e.getMessage());
+            return false;
         }
     }
 
-    private static boolean isPrivateOrBlockedHost(String host) {
+    /**
+     * Validate a URL for security and format
+     *
+     * @param url the URL to validate
+     * @throws IllegalArgumentException if URL is invalid or blocked
+     */
+    public void validateUrl(String url) {
+
+        log.debug("Validating URL: {}", url);
+
+        // Check if URL is empty
+        if (url == null || url.trim().isEmpty()) {
+            throw new IllegalArgumentException("URL cannot be empty");
+        }
+
+        // Parse URL
+        URI uri;
+        try {
+            uri = new URI(url);
+        } catch (URISyntaxException e) {
+            log.warn("Invalid URL format: {}", url);
+            throw new IllegalArgumentException("Invalid URL format: " + e.getMessage());
+        }
+
+        // Check scheme
+        String scheme = uri.getScheme();
+        if (scheme == null || (!scheme.equals("http") && !scheme.equals("https"))) {
+            log.warn("Invalid URL scheme: {}", scheme);
+            throw new IllegalArgumentException("URL must use HTTP or HTTPS");
+        }
+
+        // Check host
+        String host = uri.getHost();
+        if (host == null || host.isEmpty()) {
+            log.warn("URL missing host: {}", url);
+            throw new IllegalArgumentException("URL must have a host");
+        }
+
+        // Check if host is blocked
+        if (isBlockedHost(host)) {
+            log.warn("Blocked host detected: {} (SSRF protection)", host);
+            throw new IllegalArgumentException("URL points to blocked/private network: " + host);
+        }
+
+        log.debug("URL validation passed: {}", url);
+    }
+
+    /**
+     * Check if a host is in the blocked list
+     *
+     * @param host the hostname to check
+     * @return true if host is blocked, false otherwise
+     */
+    private boolean isBlockedHost(String host) {
+
         // Check exact matches
-        if (BLOCKED_HOSTS.contains(host)) {
+        if (BLOCKED_HOSTS.contains(host.toLowerCase())) {
             return true;
         }
 
-        // Check prefixes (for 10.x, 172.16.x, 192.168.x)
-        for (String blocked : BLOCKED_HOSTS) {
-            if (blocked.endsWith(".") && host.startsWith(blocked)) {
+        // Check patterns (private IPs)
+        for (String pattern : BLOCKED_PATTERNS) {
+            if (host.matches(pattern)) {
                 return true;
             }
         }
 
         return false;
-    }
-
-    /**
-     * Generate a random short code.
-     */
-    public static String generateShortCode() {
-        String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        StringBuilder code = new StringBuilder();
-        for (int i = 0; i < 6; i++) {
-            code.append(chars.charAt((int) (Math.random() * chars.length())));
-        }
-        return code.toString();
     }
 }

@@ -2,6 +2,7 @@ package com.shortener.urlshortener.model;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -9,11 +10,12 @@ import java.time.Instant;
 
 /**
  * Entity representing a shortened URL.
- * Tracks original URL, code, creation time, and expiration.
+ * Tracks original URL, code, creation time, expiration, and click count.
  */
 @Entity
 @Table(name = "short_urls")
 @Data
+@Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class ShortUrl {
@@ -34,30 +36,38 @@ public class ShortUrl {
     @Column
     private Instant expiresAt;
 
-    @Column
+    // @Builder.Default makes the builder respect the 0L default (fixes the compiler warning)
+    @Builder.Default
+    @Column(nullable = false)
     private Long clickCount = 0L;
 
-    /**
-     * Check if this shortened URL is still valid (not expired).
-     */
+    @PrePersist
+    protected void onCreate() {
+        // Only fill in values that were not set, so the service's timestamp is kept
+        if (createdAt == null) {
+            createdAt = Instant.now();
+        }
+        if (clickCount == null) {
+            clickCount = 0L;
+        }
+    }
+
     public boolean isValid() {
         if (expiresAt == null) {
-            return true; // No expiration
+            return true;
         }
         return Instant.now().isBefore(expiresAt);
     }
 
-    /**
-     * Increment click counter.
-     */
-    public void recordClick() {
-        this.clickCount++;
+    public boolean hasExpired() {
+        return !isValid();
     }
 
     /**
-     * Check if URL has expired.
+     * In-memory increment. The service uses the atomic repository update instead;
+     * this is kept null-safe for any code that still calls it.
      */
-    public boolean hasExpired() {
-        return !isValid();
+    public void recordClick() {
+        this.clickCount = (this.clickCount == null ? 0L : this.clickCount) + 1;
     }
 }

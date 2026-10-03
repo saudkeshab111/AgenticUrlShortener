@@ -1,165 +1,190 @@
 package com.shortener.orchestrator;
 
-import com.shortener.orchestrator.agents.*;
-import com.shortener.orchestrator.recovery.*;
-import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
-import java.util.concurrent.*;
 
-/**
- * Main orchestrator engine that executes DAG-based SDLC workflows.
- * Coordinates agents, gates, and recovery strategies.
- */
+@Slf4j
 @Component
-@RequiredArgsConstructor
 public class OrchestratorEngine {
 
     private final PolicyEngine policyEngine;
 
+    public OrchestratorEngine(PolicyEngine policyEngine) {
+        this.policyEngine = policyEngine;
+    }
+
     /**
-     * Execute a DAG run with orchestration logic.
+     * Execute DAG with gate integration
      */
-    public AgentRun execute(DAG dag, String runId) {
-        AgentRun run = new AgentRun(runId, dag);
-        run.setStatus(AgentRun.RunStatus.IN_PROGRESS);
-        run.logExecution("Starting orchestration run: " + runId);
+    public AgentRun execute(AgentRun run, String originalUrl) {
+        log.info("Starting DAG execution for workflow: {}", run.getId());
 
-        try {
-            // Get topological order
-            List<DAGNode> executionOrder = dag.getTopologicalOrder();
-            run.logExecution("Topological order: " + executionOrder.size() + " nodes");
+        DAG dag = run.getDag();
+        List<DAGNode> executionOrder = dag.getExecutionOrder();
 
-            // Execute nodes in order
-            for (DAGNode node : executionOrder) {
-                executeNode(run, node);
+        for (DAGNode node : executionOrder) {
+            log.info("[{}] Executing node: {}", run.getId(), node.getId());
 
-                // Check if we should stop
-                if (run.getStatus() == AgentRun.RunStatus.STOPPED) {
-                    break;
+            try {
+                // Execute agent
+                Map<String, Object> output = executeAgent(node, originalUrl);
+                node.markPassed(output.toString());
+                run.setAgentOutput(node.getId(), output);
+
+                log.debug("[{}] Node {} passed", run.getId(), node.getId());
+
+                // Check for gate after this node
+                Gate gate = findGateForNode(dag, node.getId());
+                if (gate != null) {
+                    log.info("[{}] Gate {} required after node {}", run.getId(), gate.getType(), node.getId());
+
+                    boolean gateApproved = evaluateGate(gate, node);
+                    if (!gateApproved) {
+                        log.warn("[{}] Gate {} REJECTED. Halting execution.", run.getId(), gate.getType());
+                        node.markFailed("Gate rejected: " + gate.getType());
+                        run.setStatus(AgentRun.RunStatus.BLOCKED);
+                        return run;
+                    }
+
+                    log.info("[{}] Gate {} APPROVED", run.getId(), gate.getType());
                 }
-            }
 
-            // Mark as complete if not already failed
-            if (run.getStatus() == AgentRun.RunStatus.IN_PROGRESS) {
-                run.complete();
-                run.logExecution("Orchestration completed successfully");
+            } catch (Exception e) {
+                log.error("[{}] Node {} FAILED: {}", run.getId(), node.getId(), e.getMessage());
+                node.markFailed(e.getMessage());
+                run.setStatus(AgentRun.RunStatus.FAILED);
+                return run;
             }
-
-        } catch (Exception e) {
-            run.fail("Orchestration failed: " + e.getMessage());
-            run.logExecution("ERROR: " + e.getMessage());
         }
 
+        run.setStatus(AgentRun.RunStatus.COMPLETED);
+        log.info("[{}] DAG execution COMPLETED", run.getId());
         return run;
     }
 
     /**
-     * Execute a single node with gate validation.
+     * Execute an agent based on its type
      */
-    private void executeNode(AgentRun run, DAGNode node) {
-        run.setNodeState(node.getId(), DAGNode.ExecutionState.IN_PROGRESS);
-        run.logExecution("Executing node: " + node.getId() + " (" + node.getName() + ")");
+    private Map<String, Object> executeAgent(DAGNode node, String originalUrl) {
+        switch (node.getAgentType()) {
+            case REQUIREMENT:
+                return executeRequirementAgent(node, originalUrl);
+            case ARCHITECTURE:
+                return executeArchitectureAgent(node, originalUrl);
+            case SECURITY:
+                return executeSecurityAgent(node, originalUrl);
+            case IMPLEMENTATION:
+                return executeImplementationAgent(node, originalUrl);
+            case TEST:
+                return executeTestAgent(node, originalUrl);
+            default:
+                throw new IllegalArgumentException("Unknown agent type: " + node.getAgentType());
+        }
+    }
 
-        try {
-            // Get agent output (mock)
-            String output = invokeAgent(node);
-            run.recordDecision(node.getId(), output);
+    private Map<String, Object> executeRequirementAgent(DAGNode node, String originalUrl) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("agent", "RequirementAgent");
+        result.put("url", originalUrl);
+        result.put("requirements", List.of("shortening", "tracking", "expiration"));
+        result.put("status", "ANALYZED");
+        return result;
+    }
 
-            // Check for gate
-            if (node.getRequiredGate() != null) {
-                Gate gate = new Gate(node.getId() + "-gate", node.getRequiredGate(), node.getName());
+    private Map<String, Object> executeArchitectureAgent(DAGNode node, String originalUrl) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("agent", "ArchitectureAgent");
+        result.put("design", "REST API with distributed cache");
+        result.put("components", List.of("Controller", "Service", "Repository"));
+        result.put("status", "DESIGNED");
+        return result;
+    }
 
-                // Evaluate policy
-                PolicyEngine.RiskLevel risk = evaluateNodeRisk(node);
+    private Map<String, Object> executeSecurityAgent(DAGNode node, String originalUrl) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("agent", "SecurityAgent");
+        result.put("threats", List.of("SQL injection", "XSS", "CSRF"));
+        result.put("mitigations", List.of("parameterized queries", "input validation", "CSRF tokens"));
+        result.put("status", "SECURED");
+        return result;
+    }
 
-                if (risk == PolicyEngine.RiskLevel.PROHIBITED) {
-                    // Trigger safe stop
-                    SafeStopHandler handler = new SafeStopHandler(
-                            SafeStopHandler.StopReason.PROHIBITED_ACTION,
-                            "Prohibited action in node: " + node.getId()
-                    );
-                    handler.stop(new RollbackStrategy());
-                    run.stop();
-                    run.logExecution("SAFE_STOP triggered for node: " + node.getId());
-                    return;
-                } else if (risk == PolicyEngine.RiskLevel.HIGH) {
-                    // Require human approval
-                    gate.awaitHuman();
-                    gate.approveByHuman("system-auto");
-                    run.logExecution("Human gate approved for node: " + node.getId());
-                } else {
-                    // Auto-approve lower risk
-                    gate.approve("Automated validation passed");
-                    run.logExecution("Gate passed for node: " + node.getId());
+    private Map<String, Object> executeImplementationAgent(DAGNode node, String originalUrl) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("agent", "ImplementationAgent");
+        result.put("framework", "Spring Boot 3.2");
+        result.put("database", "H2");
+        result.put("status", "IMPLEMENTED");
+        return result;
+    }
+
+    private Map<String, Object> executeTestAgent(DAGNode node, String originalUrl) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("agent", "TestAgent");
+        result.put("coverage", "85%");
+        result.put("tests", List.of("unit", "integration", "e2e"));
+        result.put("status", "TESTED");
+        return result;
+    }
+
+    /**
+     * Find gate that comes after a specific node
+     */
+    private Gate findGateForNode(DAG dag, String nodeId) {
+        // Simple implementation: check if node is high-risk, add QUALITY_GATE
+        if (nodeId.contains("security") || nodeId.contains("implementation")) {
+            Gate gate = new Gate(
+                    "gate-" + nodeId,
+                    Gate.GateType.QUALITY_GATE,
+                    nodeId
+            );
+            gate.awaitHuman();
+            return gate;
+        }
+        return null;
+    }
+
+    /**
+     * Evaluate if a gate should pass
+     */
+    private boolean evaluateGate(Gate gate, DAGNode node) {
+        log.debug("Evaluating gate {} for node {}", gate.getType(), node.getId());
+
+        switch (gate.getType()) {
+            case AUTO_GATE:
+                // Auto-gates always pass
+                gate.approve("Auto-approved");
+                return true;
+
+            case QUALITY_GATE:
+                // Quality gates check implementation quality
+                if (node.getOutput() != null && !node.getOutput().isEmpty()) {
+                    gate.approve("Quality check passed");
+                    return true;
                 }
-            }
+                gate.reject("Quality check failed: empty output");
+                return false;
 
-            // Mark as passed
-            node.markPassed(output);
-            run.setNodeState(node.getId(), DAGNode.ExecutionState.PASSED);
-            run.logExecution("Node PASSED: " + node.getId());
+            case HUMAN_GATE:
+                // Human gates require approval (simulated here)
+                gate.awaitHuman();
+                gate.approveByHuman("system-admin");
+                return gate.isPassed();
 
-        } catch (Exception e) {
-            node.markFailed(e.getMessage());
-            run.setNodeState(node.getId(), DAGNode.ExecutionState.FAILED);
-            run.logExecution("Node FAILED: " + node.getId() + " - " + e.getMessage());
+            case SYNC_GATE:
+                // Sync gates are for parallel execution coordination
+                gate.approve("Sync complete");
+                return true;
+
+            case SAFE_STOP:
+                // Safe stop gates halt execution
+                gate.reject("Safe stop engaged");
+                return false;
+
+            default:
+                return true;
         }
-    }
-
-    /**
-     * Invoke the appropriate agent for a node (MOCK).
-     */
-    private String invokeAgent(DAGNode node) {
-        return switch (node.getAgentType()) {
-            case "REQUIREMENT" -> {
-                RequirementAgent agent = new RequirementAgent();
-                RequirementAgent.RequirementOutput output = agent.analyze("Node: " + node.getName());
-                yield "Tasks: " + output.getTasks().size() + ", Criteria: " + output.getAcceptanceCriteria().size();
-            }
-            case "ARCHITECTURE" -> {
-                ArchitectureAgent agent = new ArchitectureAgent();
-                ArchitectureAgent.ArchitectureOutput output = agent.propose("Node: " + node.getName());
-                yield "Components: " + output.getComponents().size() + ", Risks: " + output.getRisks().size();
-            }
-            case "SECURITY" -> {
-                SecurityAgent agent = new SecurityAgent();
-                SecurityAgent.SecurityOutput output = agent.validate("Node: " + node.getName());
-                yield "Threats: " + output.getThreats().size() + ", Mitigations: " + output.getMitigations().size();
-            }
-            case "IMPLEMENTATION" -> {
-                ImplementationAgent agent = new ImplementationAgent();
-                ImplementationAgent.ImplementationOutput output = agent.plan("Node: " + node.getName());
-                yield "Phases: " + output.getPhases().size() + ", Hours: " + output.getEstimatedHours();
-            }
-            case "TEST" -> {
-                TestAgent agent = new TestAgent();
-                TestAgent.TestOutput output = agent.generateStrategy("Node: " + node.getName());
-                yield "Coverage: " + output.getCoverageTarget() + "%, Tests: "
-                        + (output.getUnitTests().size() + output.getIntegrationTests().size() + output.getEndToEndTests().size());
-            }
-            default -> "Unknown agent: " + node.getAgentType();
-        };
-    }
-
-    /**
-     * Evaluate risk level for a node (MOCK policy).
-     */
-    private PolicyEngine.RiskLevel evaluateNodeRisk(DAGNode node) {
-        // Mock risk evaluation based on node name
-        String name = node.getName().toLowerCase();
-
-        if (name.contains("schema") || name.contains("database")) {
-            return PolicyEngine.RiskLevel.HIGH;
-        } else if (name.contains("security") || name.contains("auth")) {
-            return PolicyEngine.RiskLevel.HIGH;
-        } else if (name.contains("dependency") || name.contains("upgrade")) {
-            return PolicyEngine.RiskLevel.MEDIUM;
-        } else if (name.contains("test") || name.contains("validation")) {
-            return PolicyEngine.RiskLevel.LOW;
-        }
-
-        return PolicyEngine.RiskLevel.MEDIUM;
     }
 }

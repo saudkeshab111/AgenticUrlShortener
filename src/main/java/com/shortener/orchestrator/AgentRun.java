@@ -1,83 +1,68 @@
 package com.shortener.orchestrator;
 
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 import java.util.*;
 
-/**
- * Represents the state of an orchestrator run.
- * Tracks the DAG execution, decisions, and metrics.
- */
 @Data
+@Builder
 @NoArgsConstructor
+@AllArgsConstructor
 public class AgentRun {
 
-    private String runId;
-    private DAG dag;
-    private Map<String, DAGNode.ExecutionState> nodeStates = new HashMap<>();
-    private Map<String, Object> decisions = new HashMap<>();
-    private List<String> executionLog = new ArrayList<>();
-    private Instant startTime;
-    private Instant endTime;
-    private RunStatus status = RunStatus.INITIALIZED;
-    private String failureReason;
-
     public enum RunStatus {
-        INITIALIZED,
-        IN_PROGRESS,
-        AWAITING_GATE,
-        AWAITING_HUMAN,
+        PENDING,
+        RUNNING,
         COMPLETED,
         FAILED,
-        STOPPED
+        BLOCKED  // <- ADD THIS
     }
 
-    public AgentRun(String runId, DAG dag) {
-        this.runId = runId;
-        this.dag = dag;
-        this.startTime = Instant.now();
+    private String id;
+    private DAG dag;
 
-        // Initialize node states
-        for (DAGNode node : dag.getNodes()) {
-            this.nodeStates.put(node.getId(), DAGNode.ExecutionState.PENDING);
-        }
+    @Builder.Default
+    private RunStatus status = RunStatus.PENDING;
+
+    @Builder.Default
+    private Instant startTime = Instant.now();
+
+    private Instant endTime;
+    private String errorMessage;
+
+    @Builder.Default
+    private Map<String, Object> agentOutputs = new LinkedHashMap<>();
+
+    /**
+     * Set agent output for a node
+     */
+    public void setAgentOutput(String nodeId, Object output) {
+        agentOutputs.put(nodeId, output);
     }
 
-    public void logExecution(String message) {
-        this.executionLog.add(Instant.now() + ": " + message);
+    /**
+     * Get agent output for a node
+     */
+    public Map<String, Object> getAgentOutput(String nodeId) {
+        Object output = agentOutputs.get(nodeId);
+        return output instanceof Map ? (Map<String, Object>) output : new LinkedHashMap<>();
     }
 
-    public void setNodeState(String nodeId, DAGNode.ExecutionState state) {
-        this.nodeStates.put(nodeId, state);
+    /**
+     * Get all agent outputs
+     */
+    public Map<String, Object> getAllAgentOutputs() {
+        return new LinkedHashMap<>(agentOutputs);
     }
 
-    public DAGNode.ExecutionState getNodeState(String nodeId) {
-        return this.nodeStates.getOrDefault(nodeId, DAGNode.ExecutionState.PENDING);
-    }
-
-    public void recordDecision(String nodeId, Object decision) {
-        this.decisions.put(nodeId, decision);
-    }
-
-    public Object getDecision(String nodeId) {
-        return this.decisions.get(nodeId);
-    }
-
-    public void complete() {
-        this.endTime = Instant.now();
-        this.status = RunStatus.COMPLETED;
-    }
-
-    public void fail(String reason) {
-        this.endTime = Instant.now();
-        this.status = RunStatus.FAILED;
-        this.failureReason = reason;
-    }
-
-    public void stop() {
-        this.endTime = Instant.now();
-        this.status = RunStatus.STOPPED;
+    /**
+     * Validate all nodes executed
+     */
+    public boolean validateAllNodesExecuted() {
+        return status == RunStatus.COMPLETED && !agentOutputs.isEmpty();
     }
 }

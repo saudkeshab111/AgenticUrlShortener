@@ -1,83 +1,106 @@
 package com.shortener.orchestrator;
 
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
- * Represents a Directed Acyclic Graph of orchestration tasks.
- * Handles topological sorting for execution order.
+ * Directed Acyclic Graph (DAG) representing the orchestration workflow.
+ * Contains nodes and defines execution order and dependencies.
  */
 @Data
+@Builder
 @NoArgsConstructor
+@AllArgsConstructor
 public class DAG {
 
     private String id;
+    private String name;
+
+    @Builder.Default
     private List<DAGNode> nodes = new ArrayList<>();
-    private Map<String, DAGNode> nodeMap = new HashMap<>();
 
-    public DAG(String id) {
-        this.id = id;
-    }
-
-    public void addNode(DAGNode node) {
-        if (!this.nodeMap.containsKey(node.getId())) {
-            this.nodes.add(node);
-            this.nodeMap.put(node.getId(), node);
-        }
-    }
-
-    public DAGNode getNode(String nodeId) {
-        return this.nodeMap.get(nodeId);
-    }
-
+    /**
+     * Get nodes in topological order (respecting dependencies)
+     */
     public List<DAGNode> getTopologicalOrder() {
+        List<DAGNode> sorted = new ArrayList<>();
         Map<String, Integer> inDegree = new HashMap<>();
 
-        // In-degree = number of dependencies each node is waiting on
-        for (DAGNode node : this.nodes) {
-            inDegree.put(node.getId(), node.getDependsOn().size());
+        // Initialize in-degree for all nodes
+        for (DAGNode node : nodes) {
+            inDegree.put(node.getId(), 0);
+        }
+
+        // Calculate in-degree (count dependencies)
+        for (DAGNode node : nodes) {
+            if (node.getDependsOn() != null && !node.getDependsOn().isEmpty()) {
+                inDegree.put(node.getId(), inDegree.getOrDefault(node.getId(), 0) + 1);
+            }
         }
 
         // Start with nodes that have no dependencies
         Queue<DAGNode> queue = new LinkedList<>();
-        for (DAGNode node : this.nodes) {
+        for (DAGNode node : nodes) {
             if (inDegree.get(node.getId()) == 0) {
                 queue.offer(node);
             }
         }
 
-        List<DAGNode> sorted = new ArrayList<>();
+        // Process queue
         while (!queue.isEmpty()) {
-            DAGNode node = queue.poll();
-            sorted.add(node);
+            DAGNode current = queue.poll();
+            sorted.add(current);
 
-            // Unlock nodes that depended on this one
-            for (DAGNode other : this.nodes) {
-                if (other.getDependsOn().contains(node.getId())) {
-                    int newDegree = inDegree.get(other.getId()) - 1;
-                    inDegree.put(other.getId(), newDegree);
-                    if (newDegree == 0) {
-                        queue.offer(other);
+            // Find nodes that depend on current node and reduce their in-degree
+            for (DAGNode node : nodes) {
+                if (node.getDependsOn() != null &&
+                        node.getDependsOn().equals(current.getId())) {
+                    inDegree.put(node.getId(), inDegree.get(node.getId()) - 1);
+                    if (inDegree.get(node.getId()) == 0) {
+                        queue.offer(node);
                     }
                 }
             }
         }
 
-        if (sorted.size() != this.nodes.size()) {
-            throw new IllegalStateException("DAG contains a cycle!");
-        }
-
         return sorted;
     }
 
-    public List<DAGNode> getExecutableNodes(Map<String, DAGNode.ExecutionState> nodeStates) {
-        return this.nodes.stream()
-                .filter(node -> nodeStates.getOrDefault(node.getId(), DAGNode.ExecutionState.PENDING)
-                        == DAGNode.ExecutionState.PENDING)
-                .filter(node -> node.canExecute(nodeStates))
-                .collect(Collectors.toList());
+    /**
+     * Add a node to the DAG
+     */
+    public void addNode(DAGNode node) {
+        if (node == null) {
+            throw new IllegalArgumentException("Node cannot be null");
+        }
+        nodes.add(node);
+    }
+
+    /**
+     * Get a node by ID
+     */
+    public DAGNode getNodeById(String nodeId) {
+        return nodes.stream()
+                .filter(node -> node.getId().equals(nodeId))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * Validate DAG has no cycles
+     */
+    public boolean isValid() {
+        return getTopologicalOrder().size() == nodes.size();
+    }
+
+    /**
+     * Get execution order (respecting dependencies)
+     */
+    public List<DAGNode> getExecutionOrder() {
+        return getTopologicalOrder();
     }
 }

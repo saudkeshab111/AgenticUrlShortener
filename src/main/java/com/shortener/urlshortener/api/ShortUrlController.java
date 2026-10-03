@@ -2,97 +2,135 @@ package com.shortener.urlshortener.api;
 
 import com.shortener.urlshortener.model.ShortUrl;
 import com.shortener.urlshortener.service.ShortUrlService;
+import com.shortener.urlshortener.service.ShortUrlService.ShortUrlExpiredException;
+import com.shortener.urlshortener.service.ShortUrlService.ShortUrlNotFoundException;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
+import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
-/**
- * REST API for URL shortening.
- * Handles creation and retrieval of shortened URLs.
- */
+@Slf4j
 @RestController
-@RequestMapping("/api/v1")
 @RequiredArgsConstructor
 public class ShortUrlController {
 
-    private final ShortUrlService service;
+    private final ShortUrlService shortUrlService;
 
     /**
-     * POST /v1/urls
-     * Create a new shortened URL.
-     *
-     * Request body:
-     * {
-     *   "originalUrl": "https://www.example.com/very/long/url",
-     *   "expirationDays": 30
-     * }
+     * POST /api/v1/urls - create a short URL.
+     * expirationDays: optional, 0 or missing = service default (365 days).
      */
-    @PostMapping("/urls")
-    public ResponseEntity<Map<String, Object>> createShortUrl(
-            @RequestBody CreateUrlRequest request) {
-
+    @PostMapping("/api/v1/urls")
+    public ResponseEntity<Map<String, Object>> createShortUrl(@RequestBody Map<String, Object> request) {
         try {
-            ShortUrl created = service.create(
-                    request.getOriginalUrl(),
-                    request.getExpirationDays()
-            );
+            String originalUrl = parseOriginalUrl(request.get("originalUrl"));
+            int expirationDays = parseExpirationDays(request.get("expirationDays"));
+
+            ShortUrl shortUrl = shortUrlService.createShortUrl(originalUrl, expirationDays);
 
             Map<String, Object> response = new HashMap<>();
-            response.put("code", created.getCode());
-            response.put("shortUrl", "http://localhost:8080/" + created.getCode());
-            response.put("originalUrl", created.getOriginalUrl());
-            response.put("createdAt", created.getCreatedAt());
-            response.put("expiresAt", created.getExpiresAt());
+            response.put("code", shortUrl.getCode());
+            response.put("shortUrl", buildShortLink(shortUrl.getCode()));
+            response.put("originalUrl", shortUrl.getOriginalUrl());
+            response.put("createdAt", shortUrl.getCreatedAt());
+            response.put("expiresAt", shortUrl.getExpiresAt());
 
             return ResponseEntity.status(HttpStatus.CREATED).body(response);
+
         } catch (IllegalArgumentException e) {
-            throw new InvalidUrlException(e.getMessage());
+            return error(HttpStatus.BAD_REQUEST, "Invalid request", e.getMessage());
         }
     }
 
     /**
-     * GET /{code}
-     * Retrieve and redirect to original URL.
+     * GET /api/v1/{code} - JSON lookup. Counts as a click.
      */
-    @GetMapping("/{code}")
+    @GetMapping("/api/v1/{code}")
     public ResponseEntity<Map<String, Object>> getShortUrl(@PathVariable String code) {
-        return service.getByCode(code)
-                .map(shortUrl -> {
-                    Map<String, Object> response = new HashMap<>();
-                    response.put("code", shortUrl.getCode());
-                    response.put("originalUrl", shortUrl.getOriginalUrl());
-                    response.put("clickCount", shortUrl.getClickCount());
-                    response.put("createdAt", shortUrl.getCreatedAt());
-                    return ResponseEntity.ok(response);
-                })
-                .orElseThrow(() -> new UrlNotFoundException("URL not found or expired: " + code));
+        try {
+            ShortUrl shortUrl = shortUrlService.resolveAndRecordClick(code);
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("code", shortUrl.getCode());
+            response.put("originalUrl", shortUrl.getOriginalUrl());
+            response.put("clickCount", shortUrl.getClickCount());
+            response.put("createdAt", shortUrl.getCreatedAt());
+            response.put("expiresAt", shortUrl.getExpiresAt());
+
+            return ResponseEntity.ok(response);
+
+        } catch (ShortUrlNotFoundException e) {
+            return error(HttpStatus.NOT_FOUND, "URL not found", e.getMessage());
+        } catch (ShortUrlExpiredException e) {
+            return error(HttpStatus.NOT_FOUND, "URL expired", e.getMessage());
+        } catch (IllegalArgumentException e) {
+            return error(HttpStatus.BAD_REQUEST, "Invalid request", e.getMessage());
+        }
     }
 
     /**
-     * Request DTO for creating shortened URLs.
+     * GET /s/{code} - the actual short link. Redirects (302) to the original URL and counts a click.
      */
-    public static class CreateUrlRequest {
-        private String originalUrl;
-        private int expirationDays = 0; // 0 = no expiration
-
-        public String getOriginalUrl() {
-            return originalUrl;
+    @GetMapping("/s/{code}")
+    public ResponseEntity<Void> redirect(@PathVariable String code) {
+        try {
+            ShortUrl shortUrl = shortUrlService.resolveAndRecordClick(code);
+            return ResponseEntity.status(HttpStatus.FOUND)
+                    .location(URI.create(shortUrl.getOriginalUrl()))
+                    .build();
+        } catch (ShortUrlNotFoundException | ShortUrlExpiredException e) {
+            return ResponseEntity.notFound().build();
         }
+    }
 
-        public void setOriginalUrl(String originalUrl) {
-            this.originalUrl = originalUrl;
-        }
+    private String buildShortLink(String code) {
+        return ServletUriComponentsBuilder.fromCurrentContextPath()
+                .path("/s/{code}")
+                .buildAndExpand(code)
+                .toUriString();
+    }
 
-        public int getExpirationDays() {
-            return expirationDays;
+    private static String parseOriginalUrl(Object value) {
+        if (!(value instanceof String url) || url.isBlank()) {
+            throw new IllegalArgumentException("originalUrl is required");
         }
+        return url;
+    }
 
-        public void setExpirationDays(int expirationDays) {
-            this.expirationDays = expirationDays;
+    private static int parseExpirationDays(Object value) {
+        if (value == null) {
+            return 0;
         }
+        int days;
+        if (value instanceof Number number) {
+            days = number.intValue();
+        } else if (value instanceof String text && !text.isBlank()) {
+            try {
+                days = Integer.parseInt(text.trim());
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("expirationDays must be a whole number");
+            }
+        } else {
+            throw new IllegalArgumentException("expirationDays must be a whole number");
+        }
+        if (days < 0) {
+            throw new IllegalArgumentException("expirationDays cannot be negative");
+        }
+        return days;
+    }
+
+    private static ResponseEntity<Map<String, Object>> error(HttpStatus status, String error, String message) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("error", error);
+        body.put("message", Objects.toString(message, error));
+        body.put("status", status.value());
+        return ResponseEntity.status(status).body(body);
     }
 }

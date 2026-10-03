@@ -3,6 +3,8 @@ package com.shortener.orchestrator.agents;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
 import java.util.*;
 
@@ -12,6 +14,8 @@ import java.util.*;
  *
  * MOCK: Does not call Claude API. Returns hardcoded response for demo.
  */
+@Slf4j
+@Component
 public class SecurityAgent {
 
     /**

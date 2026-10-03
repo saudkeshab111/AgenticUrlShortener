@@ -1,62 +1,73 @@
 package com.shortener.orchestrator;
 
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
 /**
- * Enforces risk-based policies on orchestrator actions.
- * Determines whether actions can auto-execute, require validation, or are prohibited.
+ * Policy engine for evaluating risk levels and policies
  */
-@Data
-@NoArgsConstructor
+@Slf4j
+@Component
 public class PolicyEngine {
 
     public enum RiskLevel {
-        LOW,           // Auto-execute (no gate needed)
-        MEDIUM,        // Requires validation gate
-        HIGH,          // Requires human approval
-        CRITICAL,      // Escalate to security review
-        PROHIBITED     // Trigger safe-stop
+        LOW,
+        MEDIUM,
+        HIGH,
+        PROHIBITED
     }
 
     public enum ActionType {
         SCHEMA_CHANGE,
-        DEPENDENCY_UPGRADE,
         SECURITY_PATCH,
-        REQUIREMENT_CHANGE,
-        ABORT_RUN
+        DEPENDENCY_UPDATE,
+        CODE_DEPLOY,
+        DATABASE_MIGRATION
     }
 
     /**
-     * Evaluate the risk level of an action.
+     * Evaluate risk level for an action
      */
-    public RiskLevel evaluateAction(ActionType action, String context) {
+    public RiskLevel evaluateAction(ActionType action, String target) {
+        log.debug("Evaluating risk for action: {} on target: {}", action, target);
+
         return switch (action) {
-            case SCHEMA_CHANGE -> RiskLevel.HIGH;           // Requires human approval
-            case DEPENDENCY_UPGRADE -> RiskLevel.MEDIUM;    // Requires validation
-            case SECURITY_PATCH -> RiskLevel.LOW;           // Auto-execute
-            case REQUIREMENT_CHANGE -> RiskLevel.MEDIUM;    // Requires validation
-            case ABORT_RUN -> RiskLevel.CRITICAL;           // Escalate to security
+            case SCHEMA_CHANGE -> RiskLevel.HIGH;
+            case DATABASE_MIGRATION -> RiskLevel.HIGH;
+            case SECURITY_PATCH -> RiskLevel.LOW;
+            case CODE_DEPLOY -> RiskLevel.MEDIUM;
+            case DEPENDENCY_UPDATE -> RiskLevel.MEDIUM;
         };
     }
 
     /**
-     * Determine gate type based on risk level.
+     * Get required gate based on risk level
      */
-    public Gate.GateType getRequiredGate(RiskLevel risk) {
-        return switch (risk) {
-            case LOW -> Gate.GateType.REQUIRE_GATE;
-            case MEDIUM -> Gate.GateType.QUALITY_GATE;
+    public Gate.GateType getRequiredGate(RiskLevel riskLevel) {
+        return switch (riskLevel) {
+            case PROHIBITED -> Gate.GateType.SAFE_STOP;
             case HIGH -> Gate.GateType.HUMAN_GATE;
-            case CRITICAL -> Gate.GateType.RELEASE_GATE;
-            case PROHIBITED -> null; // Trigger safe-stop instead
+            case MEDIUM -> Gate.GateType.SYNC_GATE;
+            case LOW -> Gate.GateType.AUTO_GATE;
         };
     }
 
     /**
-     * Check if action is allowed to proceed.
+     * Check if action is allowed based on risk level
      */
-    public boolean isActionAllowed(RiskLevel risk) {
-        return risk != RiskLevel.PROHIBITED;
+    public boolean isActionAllowed(RiskLevel riskLevel) {
+        return riskLevel != RiskLevel.PROHIBITED;
+    }
+
+    /**
+     * Get risk description
+     */
+    public String getRiskDescription(RiskLevel level) {
+        return switch (level) {
+            case LOW -> "Low risk - auto-approved";
+            case MEDIUM -> "Medium risk - requires sync gate";
+            case HIGH -> "High risk - requires human approval";
+            case PROHIBITED -> "Prohibited - operation blocked";
+        };
     }
 }

@@ -1,84 +1,78 @@
 package com.shortener.orchestrator;
 
+import com.shortener.orchestrator.AgentType;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.util.*;
+import java.time.Instant;
 
-/**
- * Represents a node in the orchestration DAG (Directed Acyclic Graph).
- * Each node is a task that can depend on other nodes.
- */
 @Data
+@Builder
 @NoArgsConstructor
+@AllArgsConstructor
 public class DAGNode {
-
-    private String id;
-    private String name;
-    private String agentType; // REQUIREMENT, ARCHITECTURE, SECURITY, IMPLEMENTATION, TEST
-    private List<String> dependsOn = new ArrayList<>();
-    private ExecutionState state = ExecutionState.PENDING;
-    private String output;
-    private String errorMessage;
-    private Gate.GateType requiredGate;
-    private int retryCount = 0;
 
     public enum ExecutionState {
         PENDING,
         IN_PROGRESS,
         PASSED,
         FAILED,
-        BLOCKED_BY_GATE,
-        AWAITING_HUMAN,
         SKIPPED
     }
 
-    public DAGNode(String id, String name, String agentType) {
-        this.id = id;
-        this.name = name;
-        this.agentType = agentType;
-    }
+    private String id;
+    private String name;
+    private AgentType agentType;
+    private String dependsOn;
 
-    public DAGNode(String id, String name, String agentType, Gate.GateType requiredGate) {
-        this(id, name, agentType);
-        this.requiredGate = requiredGate;
-    }
+    @Builder.Default
+    private ExecutionState executionState = ExecutionState.PENDING;
 
-    public void addDependency(String nodeId) {
-        if (!this.dependsOn.contains(nodeId)) {
-            this.dependsOn.add(nodeId);
-        }
-    }
+    @Builder.Default
+    private Instant createdAt = Instant.now();
 
-    public boolean canExecute(Map<String, ExecutionState> allNodeStates) {
-        for (String depId : this.dependsOn) {
-            ExecutionState depState = allNodeStates.get(depId);
-            if (depState == null || depState != ExecutionState.PASSED) {
-                return false;
-            }
-        }
-        return true;
-    }
+    private String output;
+    private String errorMessage;
+    private Instant completedAt;
+    private long executionTimeMs;
 
+    /**
+     * Mark node as passed with output
+     */
     public void markPassed(String output) {
-        this.state = ExecutionState.PASSED;
+        this.executionState = ExecutionState.PASSED;
         this.output = output;
+        this.completedAt = Instant.now();
+        if (createdAt != null) {
+            this.executionTimeMs = completedAt.toEpochMilli() - createdAt.toEpochMilli();
+        }
     }
 
-    public void markFailed(String error) {
-        this.state = ExecutionState.FAILED;
-        this.errorMessage = error;
+    /**
+     * Mark node as failed with error
+     */
+    public void markFailed(String errorMessage) {
+        this.executionState = ExecutionState.FAILED;
+        this.errorMessage = errorMessage;
+        this.completedAt = Instant.now();
+        if (createdAt != null) {
+            this.executionTimeMs = completedAt.toEpochMilli() - createdAt.toEpochMilli();
+        }
     }
 
-    public void markInProgress() {
-        this.state = ExecutionState.IN_PROGRESS;
+    /**
+     * Check if node can execute (dependencies met)
+     */
+    public boolean canExecute() {
+        return executionState == ExecutionState.PENDING;
     }
 
-    public void markBlockedByGate() {
-        this.state = ExecutionState.BLOCKED_BY_GATE;
-    }
-
-    public void markAwaitingHuman() {
-        this.state = ExecutionState.AWAITING_HUMAN;
+    /**
+     * Check if node is blocked
+     */
+    public boolean isBlocked() {
+        return executionState == ExecutionState.FAILED;
     }
 }
